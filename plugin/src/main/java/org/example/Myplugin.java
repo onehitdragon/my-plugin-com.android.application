@@ -39,7 +39,9 @@ public class Myplugin implements Plugin<Project>{
 
         var destinationCopyLib = new File(project.getProjectDir(), "src/main/libs-tmp");
         taskContainer.register("deleteLib", Delete.class, task -> {
-            task.setDelete(destinationCopyLib);
+            task.delete(project.fileTree(destinationCopyLib, cf -> {
+                cf.exclude("android.jar");
+            }));
             task.doLast(t -> {
                 System.out.println("Deleted: " + destinationCopyLib);
             });
