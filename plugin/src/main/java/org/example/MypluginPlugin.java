@@ -11,14 +11,10 @@ import java.util.Collections;
 import org.example.artifacttranforms.AarToJarTransform;
 import org.example.extensions.JavaCompileExtension;
 import org.example.tasks.CompileTask;
+import org.example.tasks.DebugConfigurationTask;
 import org.gradle.api.Plugin;
-import org.gradle.api.provider.Property;
 import org.gradle.api.tasks.Copy;
 
-import org.gradle.api.artifacts.Configuration;
-import org.gradle.api.artifacts.ConfigurationContainer;
-import org.gradle.api.artifacts.dsl.Dependencies;
-import org.gradle.api.artifacts.dsl.DependencyCollector;
 import org.gradle.api.attributes.Attribute;
 import org.gradle.api.attributes.AttributeCompatibilityRule;
 import org.gradle.api.attributes.AttributeDisambiguationRule;
@@ -28,14 +24,6 @@ import org.gradle.api.attributes.MultipleCandidatesDetails;
 /**
  * A simple 'hello world' plugin.
  */
-
-interface GreetingPluginExtension {
-    Property<String> getMessage();
-}
-
-interface ExampleDependencies extends Dependencies {
-    DependencyCollector getImplementation();
-}
 
 abstract class CustomDisambiguationRule implements AttributeDisambiguationRule<String> {
     @Override
@@ -102,41 +90,15 @@ public class MypluginPlugin implements Plugin<Project> {
         .getCompatibilityRules()
         .add(KotlinPlatformTypeCompatibilityRule.class);
 
-        ConfigurationContainer configureContainer = project.getConfigurations();
-        Configuration config = configureContainer.create("myConfig");
-        config.setCanBeDeclared(true);
-        config.setCanBeResolved(false);
-        config.setCanBeConsumed(false);
-
-        Configuration myConfig2 = configureContainer.create("myConfig2");
-        myConfig2.extendsFrom(config);
-        myConfig2.setCanBeDeclared(true);
-        myConfig2.setCanBeResolved(true);
-        myConfig2.setCanBeConsumed(false);
-
-        // com.android.build.api.attributes.BuildTypeAttr: release
-        // org.gradle.usage: java-runtime
-        // org.gradle.jvm.environment: android
-        // com.android.build.api.attributes.AgpVersionAttr: 8.11.0
-        // org.gradle.category: library
-        // org.jetbrains.kotlin.platform.type: androidJvm
-
-        // com.android.build.api.attributes.BuildTypeAttr: release
-        // org.gradle.usage: java-api
-        // org.gradle.jvm.environment: android
-        // com.android.build.api.attributes.AgpVersionAttr: 8.11.0
-        // org.gradle.category: library
-        // org.jetbrains.kotlin.platform.type: androidJvm
+        var configureContainer = project.getConfigurations();
+        var myConfig = configureContainer.dependencyScope("myConfig").get();
+        var myReleaseCompile = configureContainer.resolvable("myReleaseCompile").get();
+        myReleaseCompile.extendsFrom(myConfig);
+        ConfigSetup.RealseCompileAttributes(myReleaseCompile);
+        var myReleaseRuntime = configureContainer.resolvable("myReleaseRuntime").get();
+        myReleaseRuntime.extendsFrom(myConfig);
+        ConfigSetup.RealseCompileAttributes(myReleaseRuntime);
         
-        var myConfig2Atts = myConfig2.getAttributes();
-        // myConfig2Atts.attribute(Attribute.of("artifactType", String.class), "jar");
-        myConfig2Atts.attribute(Attribute.of("com.android.build.api.attributes.BuildTypeAttr", String.class), "release");
-        myConfig2Atts.attribute(Attribute.of("org.gradle.usage", String.class), "java-api");
-        myConfig2Atts.attribute(Attribute.of("org.gradle.jvm.environment", String.class), "android");
-        myConfig2Atts.attribute(Attribute.of("com.android.build.api.attributes.AgpVersionAttr", String.class), "8.11.0");
-        myConfig2Atts.attribute(Attribute.of("org.gradle.category", String.class), "library");
-        myConfig2Atts.attribute(Attribute.of("org.jetbrains.kotlin.platform.type", String.class), "androidJvm");
-
         // Register artifact transform
         var dependencyHandler  = project.getDependencies();
         dependencyHandler.registerTransform(
@@ -156,20 +118,15 @@ public class MypluginPlugin implements Plugin<Project> {
         // Register a task
         var taskContainer = project.getTasks();
         taskContainer.register("vinh", task -> {
-            myConfig2.getIncoming().artifactView(view -> {
-                view.getAttributes().attribute(Attribute.of("artifactType", String.class), "jar");
-            })
-            .getFiles()
-            .forEach(f -> {
-                System.out.println(f);
-            });
+            
         });
+
         taskContainer.register("greeting", task -> {
             task.doLast(s -> {
                 // releaseCompileClasspath releaseRuntimeClasspath
                 var releaseCompileClasspath = configureContainer.getByName("myConfig2");
                 releaseCompileClasspath.setExtendsFrom(Collections.emptyList());
-                releaseCompileClasspath.extendsFrom(config);
+                releaseCompileClasspath.extendsFrom(myConfig);
                 var attributeContainer = releaseCompileClasspath.getAttributes();
                 attributeContainer.keySet().forEach(key -> {
                     System.out.println(key + ": " + attributeContainer.getAttribute(key));
@@ -214,24 +171,38 @@ public class MypluginPlugin implements Plugin<Project> {
         });
 
         final var TASK_GROUP = "MyTask";
-        taskContainer.register("copylib", Copy.class, task -> {
+        project.getTasks().register("debugConfig", DebugConfigurationTask.class, (task -> {
             task.setGroup(TASK_GROUP);
+        }));
+
+        var destinationCopyRuntimeLib = new File(project.getProjectDir(), "src/main/libs-tmp");
+        taskContainer.register("copyRuntimeLib", Copy.class, task -> {
+            task.setGroup(TASK_GROUP);
+            task.doFirst(t -> {
+                project.delete(destinationCopyRuntimeLib);
+                System.out.println("Deleted: " + destinationCopyRuntimeLib);
+            });
             task.from(
-                myConfig2.getIncoming().artifactView(view -> {
+                myReleaseRuntime.getIncoming().artifactView(view -> {
                     view.getAttributes().attribute(Attribute.of("artifactType", String.class), "jar");
                 })
                 .getFiles()
             );
-            task.setDestinationDir(new File(project.getProjectDir(), "src/main/libs-tmp"));
+            task.exclude("android.jar");
+            task.setDestinationDir(destinationCopyRuntimeLib);
+            task.doLast(t -> {
+                System.out.println("Copied to: " + destinationCopyRuntimeLib);
+            });
         });
+
         taskContainer.register("compile", CompileTask.class, task -> {
             task.setGroup(TASK_GROUP);
             task.setSource(new File(project.getProjectDir(), "src/main/java"));
-            task.getDestinationDirectory().set(new File(project.getProjectDir(), "build"));
+            task.getDestinationDirectory().set(new File(project.getProjectDir(), "build/classes"));
             task.setSourceCompatibility(javaCompileExtension.getVersion().get().toString());
             task.setTargetCompatibility(javaCompileExtension.getVersion().get().toString());
             task.setClasspath(
-                myConfig2.getIncoming().artifactView(view -> {
+                myReleaseCompile.getIncoming().artifactView(view -> {
                     view.getAttributes().attribute(Attribute.of("artifactType", String.class), "jar");
                 })
                 .getFiles()
